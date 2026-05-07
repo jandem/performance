@@ -2,6 +2,7 @@
 <html lang="en">
 
 <head>
+  <meta charset="UTF-8">
   <title>Jetstream 3 Status Dashboard</title>
 
   <link href="https://fonts.googleapis.com/css2?family=Zilla+Slab:wght@400;700&display=swap" rel="stylesheet">
@@ -83,6 +84,206 @@
     // Current filter state
     let currentFilterText = ''; // Text field content for filtering
 
+    // --- Simulated column state ---
+    // Per-benchmark Firefox baseline scores (the "Firefox Nightly" value for each *-Geometric row)
+    let simBaselines = {};
+    // Current simulated values per benchmark (defaults to baseline)
+    let simValues = {};
+    // Competitor scores per benchmark for snap buttons
+    let simCompetitors = {};
+    // Slider min/max bounds per benchmark
+    let simBounds = {};
+    // Firefox baseline for the overall 'score' row, used to compute simulated overall score
+    let simScoreBaseline = 0;
+    // Competitor scores for the overall 'score' row
+    let simScoreCompetitors = { chrome: 0, car: 0, safari: 0, safaritp: 0 };
+
+    function buildSimCell(testName, firefoxAvg, chromeAvg, carAvg, safariAvg, safariTpAvg) {
+      // Score row: read-only display of the recomputed simulated overall score.
+      if (testName === 'score') {
+        simScoreBaseline = firefoxAvg;
+        simScoreCompetitors = { chrome: chromeAvg, car: carAvg, safari: safariAvg, safaritp: safariTpAvg };
+        const initial = firefoxAvg > 0 ? round(firefoxAvg, 2) : '';
+        return '<td class="simCell simScoreCell" onclick="event.stopPropagation()">' +
+               '<span id="simScoreValue" class="simScoreValue">' + initial + '</span> ' +
+               '<span id="simScoreDelta" class="simDelta simScoreDelta"></span>' +
+               '</td>';
+      }
+      // Per-benchmark *-Geometric rows: compact trigger + floating editor popup.
+      if (testName.endsWith('-Geometric') && firefoxAvg > 0) {
+        simBaselines[testName] = firefoxAvg;
+        simValues[testName] = firefoxAvg;
+        simCompetitors[testName] = {
+          chrome: chromeAvg, car: carAvg, safari: safariAvg, safaritp: safariTpAvg
+        };
+        const competitors = [chromeAvg, carAvg, safariAvg, safariTpAvg].filter(v => v > 0);
+        const allVals = [firefoxAvg, ...competitors];
+        const minBound = Math.min(...allVals) * 0.5;
+        const maxBound = Math.max(...allVals) * 1.5;
+        simBounds[testName] = { min: minBound, max: maxBound };
+        const safeId = simSafeId(testName);
+        const step = Math.max((maxBound - minBound) / 1000, 0.01);
+        const tnEsc = testName.replace(/'/g, "\\'");
+        let html = '<td class="simCell" onclick="event.stopPropagation()">';
+        // Compact trigger: just value + delta. Click to open editor popup.
+        html += '<div class="simTrigger" onclick="event.stopPropagation(); toggleSimEditor(this)" title="Click to edit">' +
+                '<span id="simval-' + safeId + '" class="simValText">' + round(firefoxAvg, 2) + '</span> ' +
+                '<span id="simdelta-' + safeId + '" class="simDelta"></span>' +
+                '</div>';
+        // Editor popup: slider + Reset + per-browser match buttons.
+        html += '<div class="simEditor" onclick="event.stopPropagation()">';
+        html += '<input type="range" class="simSlider" id="sim-' + safeId + '" ' +
+                'min="' + minBound.toFixed(4) + '" max="' + maxBound.toFixed(4) + '" ' +
+                'value="' + firefoxAvg + '" step="' + step.toFixed(4) + '" ' +
+                'oninput="onSimSliderChange(\'' + tnEsc + '\', this.value)" ' +
+                'onclick="event.stopPropagation()">';
+        html += '<div class="simEditorBtns">';
+        html += '<button class="snapBtn" onclick="event.stopPropagation(); snapSim(\'' + tnEsc + '\', \'reset\')" title="Reset to Firefox Nightly">Reset</button>';
+        if (chromeAvg > 0)   html += '<button class="snapBtn" onclick="event.stopPropagation(); snapSim(\'' + tnEsc + '\', \'chrome\')">Chrome</button>';
+        if (carAvg > 0)      html += '<button class="snapBtn" onclick="event.stopPropagation(); snapSim(\'' + tnEsc + '\', \'car\')">CaR</button>';
+        if (safariAvg > 0)   html += '<button class="snapBtn" onclick="event.stopPropagation(); snapSim(\'' + tnEsc + '\', \'safari\')">Safari</button>';
+        if (safariTpAvg > 0) html += '<button class="snapBtn" onclick="event.stopPropagation(); snapSim(\'' + tnEsc + '\', \'safaritp\')">Safari TP</button>';
+        html += '</div>';
+        html += '</div>';
+        html += '</td>';
+        return html;
+      }
+      // Other rows (none expected currently) — empty cell.
+      return '<td class="simCell"></td>';
+    }
+
+    // Convert testName to a CSS-safe id fragment.
+    function simSafeId(testName) {
+      return testName.replace(/[^A-Za-z0-9_-]/g, '_');
+    }
+
+    function clampToBounds(testName, v) {
+      const b = simBounds[testName];
+      if (!b) return v;
+      return Math.max(b.min, Math.min(b.max, v));
+    }
+
+    function setSimValue(testName, value) {
+      const v = clampToBounds(testName, value);
+      simValues[testName] = v;
+      const id = simSafeId(testName);
+      const slider = document.getElementById('sim-' + id);
+      if (slider) slider.value = v;
+      const valEl = document.getElementById('simval-' + id);
+      if (valEl) valEl.textContent = round(v, 2);
+      const deltaEl = document.getElementById('simdelta-' + id);
+      if (deltaEl) {
+        const baseline = simBaselines[testName];
+        const pct = baseline > 0 ? ((v / baseline) - 1) * 100 : 0;
+        deltaEl.textContent = (pct >= 0 ? '+' : '') + round(pct, 1) + '%';
+        deltaEl.style.color = pct > 1 ? 'green' : (pct < -1 ? 'red' : '#555');
+      }
+      updateRowDiffs(testName, v);
+    }
+
+    // Recompute the four 'Difference vs Firefox' diff cells for a row using the
+    // simulated value. For *-Geometric rows and the 'score' row, higher score is better,
+    // so positive % means simulated is faster than the competitor.
+    function updateRowDiffs(testName, simValue) {
+      const isGeoOrScore = testName === 'score' || testName.endsWith('-Geometric');
+      if (!isGeoOrScore) return;
+      const id = simSafeId(testName);
+      const competitors = (testName === 'score') ? simScoreCompetitors : (simCompetitors[testName] || {});
+      const targets = ['chrome', 'car', 'safari', 'safaritp'];
+      for (const t of targets) {
+        const el = document.getElementById('diff-' + t + '-' + id);
+        if (!el) continue;
+        const c = competitors[t];
+        if (!c || c <= 0) {
+          el.textContent = '';
+          el.style.color = 'black';
+          continue;
+        }
+        const pct = ((simValue - c) / c) * 100;
+        el.textContent = round(pct, 2) + '%';
+        el.style.color = getDiffColor(pct);
+      }
+    }
+
+    function onSimSliderChange(testName, value) {
+      setSimValue(testName, parseFloat(value));
+      recomputeSimulatedScore();
+    }
+
+    function snapSim(testName, target) {
+      let v;
+      if (target === 'reset') {
+        v = simBaselines[testName];
+      } else {
+        v = simCompetitors[testName] && simCompetitors[testName][target];
+      }
+      if (!v || v <= 0) return;
+      setSimValue(testName, v);
+      recomputeSimulatedScore();
+    }
+
+    function recomputeSimulatedScore() {
+      let logSum = 0;
+      let count = 0;
+      for (const name in simBaselines) {
+        const baseline = simBaselines[name];
+        const sim = simValues[name];
+        if (baseline > 0 && sim > 0) {
+          logSum += Math.log(sim / baseline);
+          count++;
+        }
+      }
+      const valEl = document.getElementById('simScoreValue');
+      const deltaEl = document.getElementById('simScoreDelta');
+      if (count === 0 || simScoreBaseline <= 0) return;
+      const ratio = Math.exp(logSum / count);
+      const newScore = simScoreBaseline * ratio;
+      if (valEl) valEl.textContent = round(newScore, 2);
+      if (deltaEl) {
+        const pct = (ratio - 1) * 100;
+        deltaEl.textContent = (pct >= 0 ? '+' : '') + round(pct, 2) + '%';
+        deltaEl.style.color = pct > 0.5 ? 'green' : (pct < -0.5 ? 'red' : '#555');
+      }
+      updateRowDiffs('score', newScore);
+    }
+
+    // Open/close the per-row editor popup. Only one is open at a time.
+    function toggleSimEditor(triggerEl) {
+      const cell = triggerEl.closest('.simCell');
+      const isOpen = cell.classList.contains('editing');
+      document.querySelectorAll('.simCell.editing').forEach(c => c.classList.remove('editing'));
+      if (!isOpen) cell.classList.add('editing');
+    }
+    // Close any open editor on outside click.
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('.simCell')) {
+        document.querySelectorAll('.simCell.editing').forEach(c => c.classList.remove('editing'));
+      }
+    });
+
+    function applySimToAll(target) {
+      for (const name in simBaselines) {
+        let v;
+        if (target === 'reset') {
+          v = simBaselines[name];
+        } else {
+          v = simCompetitors[name] && simCompetitors[name][target];
+        }
+        if (!v || v <= 0) continue;
+        setSimValue(name, v);
+      }
+      recomputeSimulatedScore();
+    }
+
+    // After the table is re-rendered (filter / sort), restore each slider's value
+    // from simValues so the UI doesn't reset to the baseline.
+    function restoreSimSliders() {
+      for (const name in simValues) {
+        setSimValue(name, simValues[name]);
+      }
+      recomputeSimulatedScore();
+    }
+
     // Function to sort table by column
     function sortTable(column) {
       // Toggle sort direction if clicking the same column
@@ -149,14 +350,15 @@
       switch(column) {
         case 'testName': return 0;
         case 'firefoxAvg': return 1;
-        case 'chromeAvg': return 2;
-        case 'carAvg': return 3;
-        case 'safariAvg': return platform.includes('macosx') ? 4 : -1;
-        case 'safariTpAvg': return platform.includes('macosx') ? 5 : -1;
-        case 'chromeDiff': return platform.includes('macosx') ? 6 : 4;
-        case 'carDiff': return platform.includes('macosx') ? 7 : 5;
-        case 'safariDiff': return platform.includes('macosx') ? 8 : -1;
-        case 'safariTpDiff': return platform.includes('macosx') ? 9 : -1;
+        // index 2 is the Simulated column (not sortable)
+        case 'chromeAvg': return 3;
+        case 'carAvg': return 4;
+        case 'safariAvg': return platform.includes('macosx') ? 5 : -1;
+        case 'safariTpAvg': return platform.includes('macosx') ? 6 : -1;
+        case 'chromeDiff': return platform.includes('macosx') ? 7 : 5;
+        case 'carDiff': return platform.includes('macosx') ? 8 : 6;
+        case 'safariDiff': return platform.includes('macosx') ? 9 : -1;
+        case 'safariTpDiff': return platform.includes('macosx') ? 10 : -1;
         default: return -1;
       }
     }
@@ -219,6 +421,9 @@
       filteredData.forEach(row => {
         tableBody.innerHTML += row.html;
       });
+
+      // Restore slider state for the simulated column after innerHTML reset
+      restoreSimSliders();
     }
 
     // Function to handle filter text input changes
@@ -239,12 +444,21 @@
     function displayTable(data) {
       let table = document.getElementById('subtestTable');
       if (!platform.includes('macosx')) {
-        table.rows[0].cells[1].colSpan = 3;
+        table.rows[0].cells[1].colSpan = 4;
         table.rows[0].cells[2].colSpan = 2;
-        table.rows[1].deleteCell(4);
-        table.rows[1].deleteCell(4);
-        table.rows[1].deleteCell(6);
-        table.rows[1].deleteCell(6);
+        table.rows[1].deleteCell(5);
+        table.rows[1].deleteCell(5);
+        table.rows[1].deleteCell(7);
+        table.rows[1].deleteCell(7);
+        // Remove the corresponding <col> elements so table-layout: fixed
+        // doesn't reserve width for non-existent columns.
+        ['col-safari', 'col-safaritp', 'col-safariDiff', 'col-safariTpDiff'].forEach(cls => {
+          const c = table.querySelector('col.' + cls);
+          if (c) c.remove();
+        });
+        // Hide Match Safari bulk button when no Safari data
+        const simSafariBtn = document.getElementById('simBulkSafari');
+        if (simSafariBtn) simSafariBtn.style.display = 'none';
       }
 
       // Group data by test name
@@ -314,12 +528,46 @@
         }
       });
 
+      // Recompute the 'score' row's per-browser values as the geomean of that
+      // browser's weekly-averaged *-Geometric subtest values, so the score row
+      // and the per-row averages are mathematically consistent (and the
+      // simulator's geomean math is exact at every slider position).
+      function geomeanOfPositive(arr) {
+        const positives = arr.filter(v => v > 0);
+        if (positives.length === 0) return 0;
+        return Math.exp(positives.reduce((s, v) => s + Math.log(v), 0) / positives.length);
+      }
+      const geoTotals = { firefox: [], chrome: [], car: [], safari: [], safaritp: [] };
+      Object.entries(testGroups).forEach(([tn, vals]) => {
+        if (!tn.endsWith('-Geometric')) return;
+        for (const browser of ['firefox', 'chrome', 'car', 'safari', 'safaritp']) {
+          const arr = vals[browser];
+          if (arr && arr.length > 0) {
+            geoTotals[browser].push(arr.reduce((a, b) => a + b) / arr.length);
+          }
+        }
+      });
+      const scoreOverrides = {
+        firefox: geomeanOfPositive(geoTotals.firefox),
+        chrome: geomeanOfPositive(geoTotals.chrome),
+        car: geomeanOfPositive(geoTotals.car),
+        safari: geomeanOfPositive(geoTotals.safari),
+        safaritp: geomeanOfPositive(geoTotals.safaritp)
+      };
+
       Object.entries(testGroups).forEach(([testName, values]) => {
-        const firefoxAvg = values.firefox.length > 0 ? values.firefox.reduce((a, b) => a + b) / values.firefox.length : 0;
-        const chromeAvg = values.chrome.length > 0 ? values.chrome.reduce((a, b) => a + b) / values.chrome.length : 0;
-        const carAvg = values.car.length > 0 ? values.car.reduce((a, b) => a + b) / values.car.length : 0;
-        const safariAvg = values.safari.length > 0 ? values.safari.reduce((a, b) => a + b) / values.safari.length : 0;
-        const safariTpAvg = values.safaritp.length > 0 ? values.safaritp.reduce((a, b) => a + b) / values.safaritp.length : 0;
+        let firefoxAvg = values.firefox.length > 0 ? values.firefox.reduce((a, b) => a + b) / values.firefox.length : 0;
+        let chromeAvg = values.chrome.length > 0 ? values.chrome.reduce((a, b) => a + b) / values.chrome.length : 0;
+        let carAvg = values.car.length > 0 ? values.car.reduce((a, b) => a + b) / values.car.length : 0;
+        let safariAvg = values.safari.length > 0 ? values.safari.reduce((a, b) => a + b) / values.safari.length : 0;
+        let safariTpAvg = values.safaritp.length > 0 ? values.safaritp.reduce((a, b) => a + b) / values.safaritp.length : 0;
+        if (testName === 'score') {
+          firefoxAvg = scoreOverrides.firefox;
+          chromeAvg = scoreOverrides.chrome;
+          carAvg = scoreOverrides.car;
+          safariAvg = scoreOverrides.safari;
+          safariTpAvg = scoreOverrides.safaritp;
+        }
 
         // Get signature IDs for this test
         const sigs = signatureIds[testName] || {
@@ -351,6 +599,7 @@
         const scoreClass = testName === 'score' ? ' class="scoreRow"' : '';
         let row = '<tr' + scoreClass + ' onClick="loadChartFromTreeherder(\'' + testName + '\'); window.scrollTo({ top: 0, behavior: \'smooth\' });"><th scope="row" class="testName">' + testName + '</th>';
         row += '<td>' + (firefoxAvg > 0 ? round(firefoxAvg, 2) + unit : '') + '</td>';
+        row += buildSimCell(testName, firefoxAvg, chromeAvg, carAvg, safariAvg, safariTpAvg);
         row += '<td>' + (chromeAvg > 0 ? round(chromeAvg, 2) + unit : '') + '</td>';
         row += '<td>' + (carAvg > 0 ? round(carAvg, 2) + unit : '') + '</td>';
 
@@ -360,12 +609,13 @@
         }
 
         // For differences, negative means Firefox is worse
-        row += '<td style="color: ' + getDiffColor(chromeDiff) + '">' + (chromeAvg > 0 ? round(chromeDiff, 2) + '%' : '') + '</td>';
-        row += '<td style="color: ' + getDiffColor(carDiff) + '">' + (carAvg > 0 ? round(carDiff, 2) + '%' : '') + '</td>';
+        const safeId = simSafeId(testName);
+        row += '<td class="diffCell" id="diff-chrome-' + safeId + '" style="color: ' + getDiffColor(chromeDiff) + '">' + (chromeAvg > 0 ? round(chromeDiff, 2) + '%' : '') + '</td>';
+        row += '<td class="diffCell" id="diff-car-' + safeId + '" style="color: ' + getDiffColor(carDiff) + '">' + (carAvg > 0 ? round(carDiff, 2) + '%' : '') + '</td>';
 
         if (platform.includes('macosx')) {
-          row += '<td style="color: ' + getDiffColor(safariDiff) + '">' + (safariAvg > 0 ? round(safariDiff, 2) + '%' : '') + '</td>';
-          row += '<td style="color: ' + getDiffColor(safariTpDiff) + '">' + (safariTpAvg > 0 ? round(safariTpDiff, 2) + '%' : '') + '</td>';
+          row += '<td class="diffCell" id="diff-safari-' + safeId + '" style="color: ' + getDiffColor(safariDiff) + '">' + (safariAvg > 0 ? round(safariDiff, 2) + '%' : '') + '</td>';
+          row += '<td class="diffCell" id="diff-safaritp-' + safeId + '" style="color: ' + getDiffColor(safariTpDiff) + '">' + (safariTpAvg > 0 ? round(safariTpDiff, 2) + '%' : '') + '</td>';
         }
 
         row += '</tr>';
@@ -428,7 +678,6 @@
       const headers = document.querySelectorAll('#subtestTable tr:nth-child(2) th');
 
       headers.forEach((header, index) => {
-        header.style.cursor = 'pointer';
         let column = null;
 
         switch(index) {
@@ -439,41 +688,44 @@
             column = 'firefoxAvg';
             break;
           case 2:
-            column = 'chromeAvg';
+            // Simulated column - not sortable
             break;
           case 3:
-            column = 'carAvg';
+            column = 'chromeAvg';
             break;
           case 4:
+            column = 'carAvg';
+            break;
+          case 5:
             if (platform.includes('macosx')) {
               column = 'safariAvg';
             } else {
               column = 'chromeDiff';
             }
             break;
-          case 5:
+          case 6:
             if (platform.includes('macosx')) {
               column = 'safariTpAvg';
             } else {
               column = 'carDiff';
             }
             break;
-          case 6:
+          case 7:
             if (platform.includes('macosx')) {
               column = 'chromeDiff';
             }
             break;
-          case 7:
+          case 8:
             if (platform.includes('macosx')) {
               column = 'carDiff';
             }
             break;
-          case 8:
+          case 9:
             if (platform.includes('macosx')) {
               column = 'safariDiff';
             }
             break;
-          case 9:
+          case 10:
             if (platform.includes('macosx')) {
               column = 'safariTpDiff';
             }
@@ -481,6 +733,7 @@
         }
 
         if (column) {
+          header.style.cursor = 'pointer';
           header.addEventListener('click', () => {
             sortTable(column);
           });
@@ -984,6 +1237,108 @@
         0% { transform: rotate(0deg); }
         100% { transform: rotate(360deg); }
       }
+
+      /* Lock column widths so dynamic content can't reflow the table */
+      #subtestTable {
+        table-layout: fixed;
+      }
+      #subtestTable td, #subtestTable th {
+        font-variant-numeric: tabular-nums;
+      }
+      /* Truncate long test names rather than blowing the column width */
+      #subtestTable .testName {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      /* Simulated column */
+      .simCell {
+        position: relative;
+        font-family: sans-serif;
+        font-size: 13px;
+        cursor: default;
+        padding: 2px 2px;
+        text-align: center;
+      }
+      .simTrigger {
+        cursor: pointer;
+        padding: 2px 4px;
+        border-radius: 3px;
+        white-space: nowrap;
+        user-select: none;
+      }
+      .simTrigger:hover {
+        background: rgba(0,0,0,0.08);
+      }
+      .simValText {
+        font-weight: bold;
+        display: inline-block;
+        min-width: 48px;
+        text-align: right;
+      }
+      .simDelta {
+        font-weight: normal;
+        font-size: 11px;
+        margin-left: 3px;
+        display: inline-block;
+        min-width: 50px;
+        text-align: left;
+      }
+      .snapBtn {
+        font-size: 11px;
+        padding: 2px 6px;
+        border: 1px solid #bbb;
+        background: #fafafa;
+        border-radius: 3px;
+        cursor: pointer;
+        font-family: sans-serif;
+        white-space: nowrap;
+      }
+      .snapBtn:hover {
+        background: #e8e8e8;
+      }
+      .simScoreValue {
+        font-weight: bold;
+        font-size: 16px;
+        line-height: 1.1;
+      }
+      .simScoreDelta {
+        line-height: 1.1;
+      }
+      /* Score row: keep value + delta on a single line, no wrap */
+      .simScoreCell {
+        white-space: nowrap;
+      }
+      /* Floating editor popup — appears on cell click, doesn't grow the row */
+      .simEditor {
+        display: none;
+        position: absolute;
+        top: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        margin-top: 2px;
+        background: white;
+        border: 1px solid #aaa;
+        border-radius: 4px;
+        padding: 8px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.18);
+        z-index: 100;
+        min-width: 200px;
+      }
+      .simCell.editing .simEditor {
+        display: block;
+      }
+      .simEditor .simSlider {
+        width: 100%;
+        cursor: pointer;
+        margin: 0 0 6px 0;
+      }
+      .simEditorBtns {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        justify-content: center;
+      }
   </style>
 </head>
 
@@ -1066,22 +1421,36 @@
             <button onclick="setFilterText('-wasm')" class="filter-button">Exclude WebAssembly</button>
           </div>
         </div>
+        <div id="simBulkBar" style="margin: 10px 0; font-family: sans-serif; font-size: 14px;">
+          <strong>Simulated column: </strong>
+          <button onclick="applySimToAll('chrome')" class="filter-button">Match Chrome on all</button>
+          <button onclick="applySimToAll('safaritp')" class="filter-button" id="simBulkSafari">Match Safari TP on all</button>
+          <button onclick="applySimToAll('reset')" class="filter-button">Reset all</button>
+          <span style="margin-left: 12px; color: #555; font-size: 12px;">Click a row's simulated value to open the editor (slider + per-browser presets); the total score updates live.</span>
+          <div style="margin-top: 6px; color: #777; font-size: 12px; font-style: italic;">Note: the total score here is recomputed as the geomean of the weekly-averaged subtest scores so the simulator math is exact at every slider position. This may differ slightly (typically &lt;3%) from <a href="https://performance.mozilla.org/jetstream" target="_blank" style="padding: 0; color: #3366ff;">performance.mozilla.org/jetstream</a>, which averages per-run total scores instead.</div>
+        </div>
         <table class="styled-table" id="subtestTable">
-          <col>
-          <col>
-          <colgroup span="2"></colgroup>
-          <col>
-          <colgroup span="2"></colgroup>
-          <col>
+          <col class="col-testName" style="width: 280px;">
+          <col class="col-firefox" style="width: 100px;">
+          <col class="col-simulated" style="width: 115px;">
+          <col class="col-chrome" style="width: 100px;">
+          <col class="col-car" style="width: 100px;">
+          <col class="col-safari" style="width: 100px;">
+          <col class="col-safaritp" style="width: 100px;">
+          <col class="col-chromeDiff" style="width: 90px;">
+          <col class="col-carDiff" style="width: 90px;">
+          <col class="col-safariDiff" style="width: 90px;">
+          <col class="col-safariTpDiff" style="width: 90px;">
           <thead>
             <tr>
               <th rowspan="1"></th>
-              <th colspan="5" scope="colgroup">Total Score (Higher is better)<br />1wk moving average</th>
+              <th colspan="6" scope="colgroup">Total Score (Higher is better)<br />Subtests: 1wk avg &middot; Score: geomean of subtests</th>
               <th colspan="4" scope="colgroup">Difference vs Firefox</th>
             </tr>
             <tr>
               <th scope="col">testName</th>
               <th scope="col">Firefox<br />Nightly</th>
+              <th scope="col" style="cursor: default;">Simulated</th>
               <th scope="col">Chrome<br />Release</th>
               <th scope="col">Chromium-<br />As-Release</th>
               <th scope="col">Safari<br/>Release</th>

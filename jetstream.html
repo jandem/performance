@@ -1251,6 +1251,25 @@
         text-overflow: ellipsis;
         white-space: nowrap;
       }
+      /* Help / explainer callout under the bulk-action bar */
+      .simHelpBox {
+        margin-top: 8px;
+        padding: 8px 12px;
+        border-left: 4px solid #ff9500;
+        background: #fff4e0;
+        color: #7a3e00;
+        font-size: 13px;
+        line-height: 1.4;
+        border-radius: 0 4px 4px 0;
+      }
+      .simHelpBox strong {
+        color: #b35900;
+      }
+      .simHelpLink {
+        padding: 0 !important;
+        color: #b35900 !important;
+        text-decoration: underline;
+      }
       /* Simulated column */
       .simCell {
         position: relative;
@@ -1426,8 +1445,10 @@
           <button onclick="applySimToAll('chrome')" class="filter-button">Match Chrome on all</button>
           <button onclick="applySimToAll('safaritp')" class="filter-button" id="simBulkSafari">Match Safari TP on all</button>
           <button onclick="applySimToAll('reset')" class="filter-button">Reset all</button>
-          <span style="margin-left: 12px; color: #555; font-size: 12px;">Click a row's simulated value to open the editor (slider + per-browser presets); the total score updates live.</span>
-          <div style="margin-top: 6px; color: #777; font-size: 12px; font-style: italic;">Note: the total score here is recomputed as the geomean of the weekly-averaged subtest scores so the simulator math is exact at every slider position. This may differ slightly (typically &lt;3%) from <a href="https://performance.mozilla.org/jetstream" target="_blank" style="padding: 0; color: #3366ff;">performance.mozilla.org/jetstream</a>, which averages per-run total scores instead.</div>
+          <div class="simHelpBox">
+            <div><strong>Tip:</strong> Click a row's simulated value to open the editor (slider + per-browser presets); the total score updates live.</div>
+            <div style="margin-top: 4px; font-style: italic;"><strong>Note:</strong> the total score here is recomputed as the geomean of the weekly-averaged subtest scores so the simulator math is exact at every slider position. This may differ slightly (typically &lt;3%) from <a href="https://performance.mozilla.org/jetstream" target="_blank" class="simHelpLink">performance.mozilla.org/jetstream</a>, which averages per-run total scores instead.</div>
+          </div>
         </div>
         <table class="styled-table" id="subtestTable">
           <col class="col-testName" style="width: 280px;">
